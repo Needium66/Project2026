@@ -52,3 +52,18 @@ Out of the box flow manual implementation
 - pgvector
 - cosine top-k
 - prompt template. 
+####
+----------------------------------------------------------------------
+Uploading files directly from local machine to cloud storage: One off
+----------------------------------------------------------------------
+- "gcloud storage cp C:\Users\You\Notes\*.txt gs://rag-corpus/"
+
+---------------------------------------------
+Uploading files from GitHub to cloud storage: Off
+---------------------------------------------
+git clone https://github.com/your-org/your-repo.git
+gcloud storage rsync --recursive \
+  --exclude '\.git/.*' \
+  ./your-repo gs://rag-corpus/github/your-repo/
+####
+N:B: The rsync is to upload changes in the future.
