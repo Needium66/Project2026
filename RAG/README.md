@@ -67,3 +67,163 @@ gcloud storage rsync --recursive \
   ./your-repo gs://rag-corpus/github/your-repo/
 ####
 N:B: The rsync is to upload changes in the future.
+
+###
+Locally Deploying RAG Pipeline
+###
+-------------------------------------------------------
+#Create a cloud storage bucket for rag implementation:
+--------------------------------------------------------
+gcloud storage buckets create gs://YOUR_BUCKET_NAME `
+  --project=YOUR_PROJECT_ID `
+  --location=us- `
+  --uniform-bucket-level-access
+------------------------------------
+#Verify the existence of the bucket:
+------------------------------------
+gcloud storage buckets describe gs://YOUR_BUCKET_NAME --format="value(name,location)"
+------------------------------------------------------------------------------------------------------------------------------------
+#Grant the RAG service agent read access: i.e create a service agent with read access for the RAG Engine set up to enable files to be imported from the cloud storage into the corpus eventually:
+------------------------------------------------------------------------------------------------------------------------------------
+$PROJECT_NUMBER = gcloud projects describe YOUR_PROJECT_ID --format="value(projectNumber)"
+gcloud storage buckets add-iam-policy-binding gs://YOUR_BUCKET_NAME `
+  --member="serviceAccount:service-$PROJECT_NUMBER@gcp-sa-vertex-rag.iam.gserviceaccount.com" `
+  --role="roles/storage.objectViewer"
+---------------------------------------
+#Upload the data into the bucket:
+---------------------------------------
+gcloud storage cp .\your-notes.md gs://YOUR_BUCKET_NAME/
+
+----------------------------------------------------------------------------
+#Check to see if you have all the necessary services needed enabled already:
+----------------------------------------------------------------------------
+gcloud services list --enabled --project=$PROJECT_ID --filter="aiplatform"
+----------------------------------------
+#Create the RAG corpus with this script:
+----------------------------------------
+import vertexai
+from vertexai import rag
+
+PROJECT = "YOUR_PROJECT_ID"
+REGION = "us-"   # must match where you'll query from
+
+vertexai.init(project=PROJECT, location=REGION)
+
+corpus = rag.create_corpus(
+    display_name="rag-notes",
+    description="Personal notes corpus (markdown from GCS)",
+    backend_config=rag.RagVectorDbConfig(          # backend: RagManagedDb by default
+        rag_embedding_model_config=rag.RagEmbeddingModelConfig(
+            vertex_prediction_endpoint=rag.VertexPredictionEndpoint(
+                publisher_model="publishers/google/models/gemini-embedding-001"
+            )
+        )
+    ),
+)
+
+print("Corpus created!")
+print("Resource name:", corpus.name)   # <-- SAVE THIS for step 4
+###
+#NOTE: Errored out with vertexai module not found- venv in action:
+#Run this to add the dependency/library/module-"python -m pip install --upgrade google-cloud-aiplatform"
+###
+NOTE: Acceptable embedding model: publisher_model="publishers/google/models/text-embedding-005"
+-------------------------------------------------------------------------------------------------------------------------------------
+#Import the files from the bucket into corpus just created- with this script, the chunking strategy and embedding will be done in one execution:
+-------------
+import vertexai
+from vertexai import rag
+
+PROJECT = "YOUR_PROJECT_ID"
+REGION = "us-"
+CORPUS = "projects/YOUR_PROJECT_ID/locations/us-/ragCorpora/1234567890"  # from step 3's output
+BUCKET_PATH = "gs://YOUR_BUCKET_NAME/"   # whole bucket; or a prefix like gs://bucket/notes/
+
+vertexai.init(project=PROJECT, location=REGION)
+
+response = rag.import_files(
+    CORPUS,
+    [BUCKET_PATH],
+    transformation_config=rag.TransformationConfig(
+        chunking_config=rag.ChunkingConfig(
+            chunk_size=512,      # tokens per chunk
+            chunk_overlap=100,   # ~20% overlap
+        )
+    ),
+    max_embedding_requests_per_min=900,  # throttle below the embedding quota
+)
+
+print("Imported:", response.imported_rag_files_count)
+print("Failed:  ", getattr(response, "failed_rag_files_count", 0))
+print("Skipped: ", getattr(response, "skipped_rag_files_count", 0))
+-----------------------------------
+#Retrieving the data: fixed- top 5
+-----------------------------------
+
+import sys
+import vertexai
+from vertexai import rag
+
+PROJECT = "YOUR_PROJECT_ID"
+REGION = "us-"
+CORPUS = "projects/.../ragCorpora/..."   # same one
+
+vertexai.init(project=PROJECT, location=REGION)
+
+question = " ".join(sys.argv[1:]) or "What topics do these notes cover?"
+
+response = rag.retrieval_query(
+    rag_resources=[rag.RagResource(rag_corpus=CORPUS)],
+    text=question,
+    rag_retrieval_config=rag.RagRetrievalConfig(
+        top_k=5,
+        filter=rag.Filter(vector_distance_threshold=0.5),  # drop weak matches
+    ),
+)
+
+for ctx in response.contexts.contexts:
+    print("─" * 70)
+    print(f"score: {ctx.score:.3f}  source: {ctx.source_display_name}")
+    print(ctx.text[:400])
+
+#Generate an output from it: ask a question and check the response
+
+import sys
+from google import genai
+from google.genai import types
+
+PROJECT = "YOUR_PROJECT_ID"
+CORPUS = "projects/YOUR_PROJECT_ID/locations/us-/ragCorpora/YOUR_ID"  # unchanged
+
+client = genai.Client(vertexai=True, project=PROJECT, location="global")
+
+question = " ".join(sys.argv[1:]) or "What topics do these notes cover?"
+
+response = client.models.generate_content(
+    model="gemini-3.8-flash",
+    contents=question,
+    config=types.GenerateContentConfig(
+        tools=[types.Tool(
+            retrieval=types.Retrieval(
+                vertex_rag_store=types.VertexRagStore(
+                    rag_resources=[types.VertexRagStoreRagResource(rag_corpus=CORPUS)],
+                    similarity_top_k=5,
+                )
+            )
+        )]
+    ),
+)
+
+print(response.text)
+-----------------------
+Commands for Execution:
+-----------------------
+#Check the existence of the read access on the bucket: gcloud storage buckets get-iam-policy gs://test_rag --format=json | Select-String "vertex-rag"
+#check size of the file: (Get-Item .\test-notes.md).Length
+#check content of the files: Get-Content .\test-notes.md -TotalCount 30
+#copy files into the bucket: gcloud storage cp .\test-notes.pdf gs://test_rag/notes/test-notes.pdf
+#remove unused file: gcloud storage rm gs://test_rag/import_results/result.ndjson 
+#import files: python test_import_files.py
+#retrieve:  python test_retrieval.py 
+#install new version: python -m pip install google-genai
+#generate: python test_generate.py "Explain what installsify is and what it does."
