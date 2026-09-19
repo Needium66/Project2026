@@ -131,3 +131,131 @@ Commands for Execution:
 #retrieve:  python ninc_retrieve_data.py 
 #install new version: python -m pip install google-genai
 #generate: python test_generate.py "Explain what installsify is and what it does."
+#####
+----------------------------------------
+Integrate A Minimalistic UI Using Gradio
+----------------------------------------
+Create a directory
+Add files for:
+- app.py- expand the generate script, with respond function that has no hallucination, historical chat building- chats follow up and grounding to the chat interface
+- requirements for dependencies and 
+- an env variable file for the corpus, project id and others
+pip install the dependencies- be careful with the version of gradio
+run your python script- python app.py
+copy the local host and paste it in the browser
+check the responses to validate: what does installsify do?
+- can you elaborate on the second point?- to check if it is tracking historical chats- keeps up
+- what is the weather in Lagos? to see if it hallucinates- should decline
+- check for grounding- refers to the source
+to enable internal users- enable username and password. provides details with the ip it is running on for access
+-----------------------------------------------------------------------------------------------------------------
+For enterprise, expand it to run a cloud run- dockerfile package implementation
+---------------------------------------------------------------------------------
+Start your local docker machine
+Enable the required service if not yet enabled- gcloud services enable run.googleapis.com artifactregistry.googleapis.com
+------------------------------------------------------------
+Create artifactory registry repo to be used for the project:
+------------------------------------------------------------
+gcloud artifacts repositories create rag-test-ui `
+  --repository-format=docker `
+  --location=us-central1 `
+  --description="RAG UI container images"
+----------------------------------------------------------------------------------------------------------------------
+Create service account for the cloud run and grant it the permission for cloud run to access vertex ai and rag corpus
+----------------------------------------------------------------------------------------------------------------------
+gcloud iam service-accounts create rag-ui-runtime `
+  --display-name="RAG UI Runtime"
+-----------------------------------------------
+Enable the project id to be used subsequently:
+-----------------------------------------------
+$PROJECT_ID = gcloud config get-value project
+
+--------------------------------------------------------------
+Grant it permission to have access to vertex ai and rag corpus
+--------------------------------------------------------------
+gcloud projects add-iam-policy-binding $PROJECT_ID `
+  --member="serviceAccount:rag-ui-runtime@$PROJECT_ID.iam.gserviceaccount.com" `
+  --role="roles/aiplatform.user"
+
+----------------------------------
+Build and Push the container image
+----------------------------------
+- Configure docker to push to artifact registry:
+gcloud auth configure-docker us-central1-docker.pkg.dev
+- Build and push (run from the rag-ui folder where your Dockerfile lives)
+gcloud builds submit `
+  --tag us-central1-docker.pkg.dev/$PROJECT_ID/rag-ui/app:latest
+
+-----------------------------------------------------
+Store the rag corpus in a secret for cloud run to use
+-----------------------------------------------------
+echo "projects/YOUR_PROJECT_ID/locations/us-central1/ragCorpora/YOUR_CORPUS_ID" | `
+  gcloud secrets create rag-corpus-name `
+  --data-file=- `
+  --replication-policy=automatic
+
+----------------------------------------------
+Grant the service account runtime to read it:
+----------------------------------------------
+gcloud secrets add-iam-policy-binding rag-corpus-name `
+  --member="serviceAccount:rag-ui-runtime@$PROJECT_ID.iam.gserviceaccount.com" `
+  --role="roles/secretmanager.secretAccessor"
+
+--------------------
+Deploy to Cloud Run:
+--------------------
+gcloud run deploy rag-ui `
+  --image us-central1-docker.pkg.dev/$PROJECT_ID/rag-ui/app:latest `
+  --region us-central1 `
+  --service-account rag-ui-runtime@$PROJECT_ID.iam.gserviceaccount.com `
+  --no-allow-unauthenticated `
+  --set-env-vars GCP_PROJECT=$PROJECT_ID `
+  --set-env-vars GCP_LOCATION=global `
+  --set-env-vars GENERATION_MODEL=gemini-3.8-flash `
+  --set-env-vars TOP_K=5 `
+  --set-secrets RAG_CORPUS=rag-corpus-name:latest `
+  --memory 512Mi `
+  --min-instances 0 `
+  --max-instances 3 `
+  --port 8080
+
+-------------------------------
+Grant the internal team access:
+-------------------------------
+- For Individual:
+gcloud run services add-iam-policy-binding rag-ui `
+  --region us-central1 `
+  --member="user:colleague@yourcompany.com" `
+  --role="roles/run.invoker"
+- For Group:
+gcloud run services add-iam-policy-binding rag-ui `
+  --region us-central1 `
+  --member="group:internal-team@yourcompany.com" `
+  --role="roles/run.invoker"
+- For Everyone In the Workspace:
+gcloud run services add-iam-policy-binding rag-ui `
+  --region us-central1 `
+  --member="group:internal-team@yourcompany.com" `
+  --role="roles/run.invoker"
+To get the URL of the cloud run deployed:
+gcloud run services describe rag-ui `
+  --region us-central1 `
+  --format="value(status.url)"
+
+--------------------------------------------------------------------------------------------------------------------
+Because you deploy with no access for unauthenticated, you might want to enable access through Identity-Aware Proxy:
+---------------------------------------------------------------------------------------------------------------------
+- You will need an OAuth Screen Configuration for this- If you do not have an existing OAuth Screen, follow the below steps
+Enable the service:
+gcloud services enable iap.googleapis.com
+Create the OAuth Consent Screen
+# APIs & Services → OAuth consent screen → Branding -> App name -> App Logo -> App Domain-> Save (Or Skip this entirely)
+# Audience- > User Type -> Internal
+# Clients -> Create Client -> Name -> Application Type: Web Application -> Add Redirect UI: Incorporate Client ID from the setting into it -> Note: Copy the Client ID and Secret produced in a safe place -> Save
+Note: https://iap.googleapis.com/v1/oauth/clientIds/YOUR_CLIENT_ID:handleRedirect
+Enable IAP on your Cloud Run service (Cloud Console is easier for this):
+# Security → Identity-Aware Proxy → find rag-ui → Toggle ON for IAP -> Select the 3 dots -> Settings-> Select Client Managed Key-> Paste Client ID and Secrets - >
+# Paste the OAuth client ID and secret when prompted
+ Can save the credentials in secret manager:
+gcloud secrets create iap-oauth-client-id --data-file=- <<< "YOUR_CLIENT_ID"
+gcloud secrets create iap-oauth-client-secret --data-file=- <<< "YOUR_CLIENT_SECRET"
