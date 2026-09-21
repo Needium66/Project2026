@@ -6,7 +6,7 @@ terraform {
   # Create this bucket once before `terraform init`:
   # gcloud storage buckets create gs://<project>-tfstate --location=us-central1
   backend "gcs" {
-    bucket = "corded-fact-466806-e0-tfstate"
+    bucket = ""
     prefix = "rag-pipeline"
   }
 }
