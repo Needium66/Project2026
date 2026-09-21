@@ -6,7 +6,7 @@ Usage:
   python scripts/import_files.py \
     --project YOUR_PROJECT_ID \
     --corpus  projects/.../ragCorpora/... \
-    --bucket  gs://needium66_rag/notes/
+    --bucket  gs://n/notes/
 """
 import argparse
 import sys
