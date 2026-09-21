@@ -1,0 +1,151 @@
+name: Deploy RAG Pipeline
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:   # allows manual trigger from GitHub UI
+
+permissions:
+  contents: read
+  id-token: write      # required for Workload Identity Federation
+
+env:
+  GCP_REGION: us-central1
+
+jobs:
+  # ── Job 1: Terraform ────────────────────────────────────────────────────────
+  terraform:
+    name: Provision Infrastructure
+    runs-on: ubuntu-latest
+    outputs:
+      image_path: ${{ steps.tf_outputs.outputs.image_path }}
+      run_url:    ${{ steps.tf_outputs.outputs.run_url }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account:            ${{ secrets.WIF_SERVICE_ACCOUNT }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.8"
+
+      - name: Terraform Init
+        working-directory: terraform
+        run: terraform init
+
+      - name: Terraform Validate
+        working-directory: terraform
+        run: terraform validate
+
+      - name: Terraform Apply
+        working-directory: terraform
+        env:
+          TF_VAR_project_id:           ${{ vars.GCP_PROJECT }}
+          TF_VAR_github_repo:          ${{ vars.GITHUB_REPO }}
+          TF_VAR_bucket_name:          ${{ vars.BUCKET_NAME }}
+          TF_VAR_corpus_resource_name: ${{ secrets.RAG_CORPUS }}
+          TF_VAR_iap_client_id:        ${{ secrets.IAP_CLIENT_ID }}
+          TF_VAR_iap_client_secret:    ${{ secrets.IAP_CLIENT_SECRET }}
+          TF_VAR_allowed_domain:       ${{ vars.ALLOWED_DOMAIN }}
+        run: terraform apply -auto-approve
+
+      - name: Capture Terraform Outputs
+        id: tf_outputs
+        working-directory: terraform
+        run: |
+          echo "image_path=$(terraform output -raw artifact_registry_image)" >> $GITHUB_OUTPUT
+          echo "run_url=$(terraform output -raw rag_ui_url)"                 >> $GITHUB_OUTPUT
+
+  # ── Job 2: Build & push container ──────────────────────────────────────────
+  build:
+    name: Build & Push Image
+    runs-on: ubuntu-latest
+    needs: terraform
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account:            ${{ secrets.WIF_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker ${{ env.GCP_REGION }}-docker.pkg.dev --quiet
+
+      - name: Build & Push
+        working-directory: app
+        run: |
+          IMAGE="${{ needs.terraform.outputs.image_path }}:${{ github.sha }}"
+          docker build -t "$IMAGE" -t "${{ needs.terraform.outputs.image_path }}:latest" .
+          docker push "$IMAGE"
+          docker push "${{ needs.terraform.outputs.image_path }}:latest"
+
+  # ── Job 3: Deploy to Cloud Run ──────────────────────────────────────────────
+  deploy:
+    name: Deploy to Cloud Run
+    runs-on: ubuntu-latest
+    needs: [terraform, build]
+
+    steps:
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account:            ${{ secrets.WIF_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Deploy
+        run: |
+          gcloud run deploy rag-ui \
+            --image "${{ needs.terraform.outputs.image_path }}:${{ github.sha }}" \
+            --region ${{ env.GCP_REGION }} \
+            --quiet
+
+      - name: Print URL
+        run: echo "✅ Deployed → ${{ needs.terraform.outputs.run_url }}"
+
+  # ── Job 4: Sync corpus (only when docs change) ──────────────────────────────
+  sync-corpus:
+    name: Sync RAG Corpus
+    runs-on: ubuntu-latest
+    needs: deploy
+    # Only run this job when files in the docs/ folder changed
+    if: |
+      contains(join(github.event.commits.*.modified, ','), 'docs/') ||
+      contains(join(github.event.commits.*.added,    ','), 'docs/')
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account:            ${{ secrets.WIF_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install SDK
+        run: pip install google-cloud-aiplatform
+
+      - name: Upload new docs to GCS
+        run: |
+          gcloud storage rsync --recursive docs/ gs://${{ vars.BUCKET_NAME }}/notes/
+
+      - name: Import into RAG corpus
+        run: |
+          python scripts/import_files.py \
+            --project ${{ vars.GCP_PROJECT }} \
+            --corpus  "${{ secrets.RAG_CORPUS }}" \
+            --bucket  gs://${{ vars.BUCKET_NAME }}/notes/
