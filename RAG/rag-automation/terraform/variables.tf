@@ -9,7 +9,7 @@ variable "region" {
 
 variable "github_repo" {
   type        = string
-  description = "GitHub repo in org/repo format e.g. neediuminc/rag-pipeline"
+  description = "GitHub repo in org/repo format e.g. needium/rag-pipeline"
 }
 
 variable "bucket_name" {
@@ -24,7 +24,7 @@ variable "corpus_resource_name" {
 
 variable "allowed_domain" {
   type        = string
-  description = "Workspace domain granted access e.g. neediuminc.com"
+  description = "Workspace domain granted access e.g. needium.com"
 }
 
 variable "generation_model" {
