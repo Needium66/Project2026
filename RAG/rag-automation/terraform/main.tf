@@ -103,13 +103,13 @@ resource "google_storage_bucket_iam_member" "rag_agent_viewer" {
 
 # ── Workload Identity Federation ─────────────────────────────────────────────
 resource "google_iam_workload_identity_pool" "github" {
-  workload_identity_pool_id = "installsify-pool"
-  display_name              = "Installsify Pool"
+  workload_identity_pool_id = "needium-pool"
+  display_name              = "Needium Pool"
   depends_on                = [google_project_service.apis]
 }
 
 resource "google_iam_workload_identity_pool_provider" "github" {
-  workload_identity_pool_id          = "installsify-pool"
+  workload_identity_pool_id          = "needium-pool"
   workload_identity_pool_provider_id = "github-provider"
   attribute_mapping = {
     "google.subject"       = "assertion.sub"
